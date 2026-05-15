@@ -22,6 +22,8 @@ func main() {
 }
 
 func run() int {
+	os.Args = preprocessArgs(os.Args)
+
 	var (
 		orgFlag         string
 		dirFlag         string
@@ -67,7 +69,8 @@ func run() int {
 	}
 
 	// Scan local directory
-	scanResult := discover.ScanDirectory(dir)
+	ctx := context.Background()
+	scanResult := discover.ScanDirectory(ctx, dir)
 	for _, w := range scanResult.Warnings {
 		if verbosity >= output.VerboseStreaming {
 			fmt.Fprintf(os.Stderr, "warning: %s\n", w)
@@ -83,7 +86,7 @@ func run() int {
 
 	// Discover remote repos
 	var allTasks []rpSync.Task
-	ghOK := discover.GhAvailable()
+	ghOK := discover.GhAvailable(ctx)
 
 	if !ghOK && explicitOrg {
 		fmt.Fprintf(os.Stderr, "error: --org specified but gh CLI is not available or not authenticated\n")
@@ -93,7 +96,7 @@ func run() int {
 
 	if ghOK && len(orgs) > 0 {
 		for _, org := range orgs {
-			remoteRepos, listErr := discover.ListOrgRepos(org)
+			remoteRepos, listErr := discover.ListOrgRepos(ctx, org)
 			if listErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: failed to list repos for %s: %v\n", org, listErr)
 				continue
@@ -172,7 +175,7 @@ func run() int {
 	}
 
 	start := time.Now()
-	results := rpSync.RunPool(context.Background(), allTasks, jobsFlag, progressFn)
+	results := rpSync.RunPool(ctx, allTasks, jobsFlag, progressFn)
 	elapsed := time.Since(start).Milliseconds()
 
 	// Report
@@ -181,12 +184,37 @@ func run() int {
 	}
 	output.RenderSummaryTable(os.Stdout, results, cfg, elapsed)
 
+	hasFailure := false
+	hasPartial := false
 	for _, r := range results {
-		if r.Status == rpSync.StatusFailed {
-			return 1
+		switch r.Status {
+		case rpSync.StatusFailed:
+			hasFailure = true
+		case rpSync.StatusPartial:
+			hasPartial = true
 		}
 	}
+	if hasFailure {
+		return 1
+	}
+	if hasPartial {
+		return 3
+	}
 	return 0
+}
+
+// preprocessArgs expands shorthand flags before flag.Parse().
+// Converts "-vv" to "-v", "-v" so the counted verboseFlag works correctly.
+func preprocessArgs(args []string) []string {
+	result := make([]string, 0, len(args)+1)
+	for _, arg := range args {
+		if arg == "-vv" {
+			result = append(result, "-v", "-v")
+		} else {
+			result = append(result, arg)
+		}
+	}
+	return result
 }
 
 // verboseFlag implements flag.Value to support -v and -vv (counted occurrences).

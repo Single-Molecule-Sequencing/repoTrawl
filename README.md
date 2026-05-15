@@ -124,7 +124,10 @@ Each operation has a deadline to prevent hanging on SSH passphrase prompts or sl
 
 | Operation                      | Timeout    |
 | ------------------------------ | ---------- |
+| `git remote get-url`           | 5 seconds  |
+| `gh auth status`               | 10 seconds |
 | `git status`                   | 15 seconds |
+| `gh api` (repo listing)        | 60 seconds |
 | `git pull` + submodule update  | 2 minutes  |
 | `git clone` + submodule update | 10 minutes |
 
@@ -135,6 +138,7 @@ Each operation has a deadline to prevent hanging on SSH passphrase prompts or sl
 | `0`  | All operations succeeded (includes skips) |
 | `1`  | One or more operations failed             |
 | `2`  | Invalid arguments or configuration error  |
+| `3`  | Completed with warnings (partial results) |
 
 ## Development
 

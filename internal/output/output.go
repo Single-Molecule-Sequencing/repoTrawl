@@ -17,6 +17,7 @@ type Counters struct {
 	Cloned  int
 	Skipped int
 	Failed  int
+	Partial int
 }
 
 // CountResults tallies results by outcome.
@@ -26,6 +27,8 @@ func CountResults(results []sync.Result) Counters {
 		switch {
 		case r.Status == sync.StatusFailed:
 			c.Failed++
+		case r.Status == sync.StatusPartial:
+			c.Partial++
 		case r.Status == sync.StatusSkippedDirty || r.Status == sync.StatusSkippedDiverged:
 			c.Skipped++
 		case r.Action == sync.ActionClone:
@@ -147,6 +150,9 @@ func RenderSummaryTable(w io.Writer, results []sync.Result, cfg Config, elapsedM
 	}
 	if c.Skipped > 0 {
 		parts = append(parts, fmt.Sprintf("⚠ %d skipped", c.Skipped))
+	}
+	if c.Partial > 0 {
+		parts = append(parts, fmt.Sprintf("⚠ %d partial", c.Partial))
 	}
 	if c.Failed > 0 {
 		parts = append(parts, fmt.Sprintf("✗ %d failed", c.Failed))

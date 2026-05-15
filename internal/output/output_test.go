@@ -15,6 +15,7 @@ func TestCountResults(t *testing.T) {
 		{Status: sync.StatusSuccess, Action: sync.ActionClone},
 		{Status: sync.StatusSkippedDirty, Action: sync.ActionPull},
 		{Status: sync.StatusFailed, Action: sync.ActionPull},
+		{Status: sync.StatusPartial, Action: sync.ActionPull},
 	}
 
 	c := CountResults(results)
@@ -29,6 +30,9 @@ func TestCountResults(t *testing.T) {
 	}
 	if c.Failed != 1 {
 		t.Errorf("failed = %d, want 1", c.Failed)
+	}
+	if c.Partial != 1 {
+		t.Errorf("partial = %d, want 1", c.Partial)
 	}
 }
 
