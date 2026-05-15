@@ -158,6 +158,7 @@ go test ./internal/sync/ -v -run TestRunPool
 ```txt
 .
 ├── main.go                      # CLI entry, flag parsing, orchestration
+├── main_test.go                 # CLI flag preprocessing tests
 ├── internal/
 │   ├── discover/
 │   │   ├── types.go             # RepoInfo, LocalRepo, ScanResult, ClassifiedTask
