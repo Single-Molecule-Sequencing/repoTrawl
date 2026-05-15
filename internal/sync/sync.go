@@ -218,7 +218,11 @@ func executePull(ctx context.Context, task Task) Result {
 			r.Summary = "local branch has diverged"
 		} else {
 			r.Status = StatusFailed
-			r.Summary = strings.TrimSpace(pullOut)
+			summary := strings.TrimSpace(pullOut)
+			if summary == "" {
+				summary = err.Error()
+			}
+			r.Summary = summary
 		}
 		return r
 	}
@@ -251,7 +255,11 @@ func executeClone(ctx context.Context, task Task) Result {
 	r.Output = cloneOut
 	if err != nil {
 		r.Status = StatusFailed
-		r.Summary = strings.TrimSpace(cloneOut)
+		summary := strings.TrimSpace(cloneOut)
+		if summary == "" {
+			summary = err.Error()
+		}
+		r.Summary = summary
 		return r
 	}
 
