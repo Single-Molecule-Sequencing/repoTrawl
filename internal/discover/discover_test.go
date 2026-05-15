@@ -1,6 +1,7 @@
 package discover
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,7 +138,7 @@ func TestScanDirectory(t *testing.T) {
 
 	os.WriteFile(filepath.Join(tmp, "somefile.txt"), []byte("hi"), 0o644)
 
-	result := ScanDirectory(tmp)
+	result := ScanDirectory(context.Background(), tmp)
 
 	if len(result.LocalRepos) != 2 {
 		t.Errorf("expected 2 local repos, got %d", len(result.LocalRepos))
@@ -267,5 +268,45 @@ func gitRun(t *testing.T, dir string, name string, args ...string) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("command %s %v failed: %s\n%s", name, args, err, out)
+	}
+}
+
+func TestParsePaginatedJSON(t *testing.T) {
+	entry := func(name string) string {
+		return `{"name":"` + name + `","clone_url":"https://github.com/Org/` + name + `.git","ssh_url":"git@github.com:Org/` + name + `.git","archived":false,"fork":false}`
+	}
+
+	tests := []struct {
+		name    string
+		input   string
+		want    int
+		wantErr bool
+	}{
+		{"single array", `[` + entry("a") + `]`, 1, false},
+		{"concatenated", `[` + entry("a") + `][` + entry("b") + `]`, 2, false},
+		{"newline separated", `[` + entry("a") + "]" + "\n" + `[` + entry("b") + `]`, 2, false},
+		{"whitespace separated", `[` + entry("a") + "]" + "  \n  " + `[` + entry("b") + `]`, 2, false},
+		{"three pages", `[` + entry("a") + `][` + entry("b") + `][` + entry("c") + `]`, 3, false},
+		{"empty string", "", 0, false},
+		{"empty array", "[]", 0, false},
+		{"invalid json", "{not json}", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repos, err := parsePaginatedJSON([]byte(tt.input), "Org")
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(repos) != tt.want {
+				t.Errorf("got %d repos, want %d", len(repos), tt.want)
+			}
+		})
 	}
 }

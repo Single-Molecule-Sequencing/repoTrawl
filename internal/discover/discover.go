@@ -1,6 +1,7 @@
 package discover
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -8,6 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+)
+
+const (
+	remoteURLTimeout = 5 * time.Second
+	ghAuthTimeout    = 10 * time.Second
+	ghListTimeout    = 60 * time.Second
 )
 
 // ParseRemoteURL extracts the org, repo name, and protocol from a GitHub remote URL.
@@ -74,7 +82,7 @@ func DeduplicateOrgs(orgs []string) []string {
 }
 
 // ScanDirectory walks a directory at depth 1 and identifies local git repos.
-func ScanDirectory(dir string) ScanResult {
+func ScanDirectory(ctx context.Context, dir string) ScanResult {
 	var result ScanResult
 	var protocols []string
 	var rawOrgs []string
@@ -101,7 +109,7 @@ func ScanDirectory(dir string) ScanResult {
 			continue
 		}
 
-		remoteURL, remoteErr := gitRemoteURL(path)
+		remoteURL, remoteErr := gitRemoteURL(ctx, path)
 		if remoteErr != nil {
 			result.Warnings = append(result.Warnings,
 				fmt.Sprintf("%s: cannot read remote URL: %v", entry.Name(), remoteErr))
@@ -133,10 +141,16 @@ func ScanDirectory(dir string) ScanResult {
 }
 
 // gitRemoteURL runs git remote get-url origin in the given directory.
-func gitRemoteURL(dir string) (string, error) {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+func gitRemoteURL(ctx context.Context, dir string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, remoteURLTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
 	cmd.Dir = dir
 	out, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("git remote get-url timed out after %s", remoteURLTimeout)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -195,11 +209,25 @@ func SelectCloneURL(repo RepoInfo, protocol, org string) string {
 	return repo.CloneURL
 }
 
+// ghEnv returns environment variables that suppress interactive prompts for gh CLI.
+func ghEnv() []string {
+	env := os.Environ()
+	env = append(env, "GH_PROMPT_DISABLED=1")
+	return env
+}
+
 // ListOrgRepos calls gh api to list all accessible repos for an org.
-func ListOrgRepos(org string) ([]RepoInfo, error) {
-	cmd := exec.Command("gh", "api", "--paginate",
+func ListOrgRepos(ctx context.Context, org string) ([]RepoInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, ghListTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "gh", "api", "--paginate",
 		fmt.Sprintf("/orgs/%s/repos?per_page=100", org))
+	cmd.Env = ghEnv()
 	out, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("gh api timed out for org %s after %s", org, ghListTimeout)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("gh api failed for org %s: %w", org, err)
 	}
@@ -207,20 +235,43 @@ func ListOrgRepos(org string) ([]RepoInfo, error) {
 }
 
 // parsePaginatedJSON handles gh --paginate output which concatenates JSON arrays.
+// Uses json.Decoder to robustly handle adjacent arrays with or without whitespace.
 func parsePaginatedJSON(data []byte, org string) ([]RepoInfo, error) {
 	raw := strings.TrimSpace(string(data))
 	if raw == "" || raw == "[]" {
 		return nil, nil
 	}
 
-	// gh --paginate concatenates arrays: [...][...] → merge into one
-	merged := strings.ReplaceAll(raw, "][", ",")
-	return ParseGhRepoJSON([]byte(merged), org)
+	var all []ghRepoEntry
+	dec := json.NewDecoder(strings.NewReader(raw))
+	for dec.More() {
+		var page []ghRepoEntry
+		if err := dec.Decode(&page); err != nil {
+			return nil, fmt.Errorf("parse GitHub API response: %w", err)
+		}
+		all = append(all, page...)
+	}
+
+	repos := make([]RepoInfo, 0, len(all))
+	for _, e := range all {
+		repos = append(repos, RepoInfo{
+			Name:     e.Name,
+			CloneURL: e.CloneURL,
+			Org:      org,
+			Archived: e.Archived,
+			Fork:     e.Fork,
+		})
+	}
+	return repos, nil
 }
 
 // GhAvailable checks if the gh CLI is installed and authenticated.
-func GhAvailable() bool {
-	cmd := exec.Command("gh", "auth", "status")
+func GhAvailable(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, ghAuthTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "gh", "auth", "status")
+	cmd.Env = ghEnv()
 	return cmd.Run() == nil
 }
 
