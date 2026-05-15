@@ -1,0 +1,172 @@
+package sync
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+)
+
+func TestIsDirty(t *testing.T) {
+	tmp := t.TempDir()
+	gitRun(t, tmp, "git", "init")
+	gitRun(t, tmp, "git", "commit", "--allow-empty", "-m", "init")
+
+	ctx := context.Background()
+
+	dirty, err := IsDirty(ctx, tmp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dirty {
+		t.Error("expected clean repo, got dirty")
+	}
+
+	os.WriteFile(filepath.Join(tmp, "file.txt"), []byte("hello"), 0o644)
+
+	dirty, err = IsDirty(ctx, tmp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !dirty {
+		t.Error("expected dirty repo, got clean")
+	}
+}
+
+func TestParsePullSummary(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{"already up to date", "Already up to date.", "up to date"},
+		{"already up-to-date", "Already up-to-date.", "up to date"},
+		{"empty", "", "up to date"},
+		{
+			"fast-forward with stats",
+			"Updating abc..def\nFast-forward\n README.md | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)",
+			"1 file changed, 1 insertion(+), 1 deletion(-)",
+		},
+		{
+			"fast-forward no stats",
+			"Updating abc..def\nFast-forward\n",
+			"updated (fast-forward)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParsePullSummary(tt.output)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunPool_PullClean(t *testing.T) {
+	tmp := t.TempDir()
+
+	bareDir := filepath.Join(tmp, "test-repo-bare.git")
+	gitRun(t, tmp, "git", "init", "--bare", bareDir)
+
+	repoDir := filepath.Join(tmp, "test-repo")
+	gitRun(t, tmp, "git", "clone", bareDir, repoDir)
+
+	os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# test"), 0o644)
+	gitRun(t, repoDir, "git", "add", ".")
+	gitRun(t, repoDir, "git", "commit", "-m", "init")
+	gitRun(t, repoDir, "git", "push")
+
+	tasks := []Task{
+		{RepoName: "test-repo", Action: ActionPull, LocalDir: repoDir},
+	}
+
+	results := RunPool(context.Background(), tasks, 2, nil)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Status != StatusUpToDate && results[0].Status != StatusSuccess {
+		t.Errorf("expected success/up-to-date, got %s: %s", results[0].Status, results[0].Summary)
+	}
+}
+
+func TestRunPool_DirtySkip(t *testing.T) {
+	tmp := t.TempDir()
+
+	bareDir := filepath.Join(tmp, "dirty-repo-bare.git")
+	gitRun(t, tmp, "git", "init", "--bare", bareDir)
+
+	repoDir := filepath.Join(tmp, "dirty-repo")
+	gitRun(t, tmp, "git", "clone", bareDir, repoDir)
+
+	os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# test"), 0o644)
+	gitRun(t, repoDir, "git", "add", ".")
+	gitRun(t, repoDir, "git", "commit", "-m", "init")
+	gitRun(t, repoDir, "git", "push")
+
+	os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("uncommitted"), 0o644)
+
+	tasks := []Task{
+		{RepoName: "dirty-repo", Action: ActionPull, LocalDir: repoDir},
+	}
+
+	results := RunPool(context.Background(), tasks, 2, nil)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Status != StatusSkippedDirty {
+		t.Errorf("expected dirty skip, got %s: %s", results[0].Status, results[0].Summary)
+	}
+}
+
+func TestRunPool_Clone(t *testing.T) {
+	tmp := t.TempDir()
+
+	bareDir := filepath.Join(tmp, "clone-source.git")
+	gitRun(t, tmp, "git", "init", "--bare", bareDir)
+
+	seedDir := filepath.Join(tmp, "seed")
+	gitRun(t, tmp, "git", "clone", bareDir, seedDir)
+	os.WriteFile(filepath.Join(seedDir, "README.md"), []byte("# test"), 0o644)
+	gitRun(t, seedDir, "git", "add", ".")
+	gitRun(t, seedDir, "git", "commit", "-m", "init")
+	gitRun(t, seedDir, "git", "push")
+
+	cloneTarget := filepath.Join(tmp, "cloned-repo")
+
+	tasks := []Task{
+		{RepoName: "cloned-repo", Action: ActionClone, CloneURL: bareDir, LocalDir: cloneTarget},
+	}
+
+	results := RunPool(context.Background(), tasks, 2, nil)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Status != StatusSuccess {
+		t.Errorf("expected success, got %s: %s", results[0].Status, results[0].Summary)
+	}
+
+	if _, err := os.Stat(filepath.Join(cloneTarget, "README.md")); err != nil {
+		t.Errorf("cloned repo should contain README.md: %v", err)
+	}
+}
+
+func gitRun(t *testing.T, dir string, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test",
+		"GIT_AUTHOR_EMAIL=test@test.com",
+		"GIT_COMMITTER_NAME=test",
+		"GIT_COMMITTER_EMAIL=test@test.com",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("command %s %v failed: %s\n%s", name, args, err, out)
+	}
+}
