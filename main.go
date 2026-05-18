@@ -28,6 +28,7 @@ func run() int {
 		orgFlag         string
 		dirFlag         string
 		jobsFlag        int
+		statusTimeout   time.Duration
 		verboseCount    verboseFlag
 		includeArchived bool
 		includeForks    bool
@@ -38,6 +39,7 @@ func run() int {
 	flag.StringVar(&orgFlag, "org", "", "GitHub org name (default: auto-detect)")
 	flag.StringVar(&dirFlag, "dir", ".", "Directory containing repos")
 	flag.IntVar(&jobsFlag, "jobs", 0, "Max concurrent operations (default: auto)")
+	flag.DurationVar(&statusTimeout, "status-timeout", rpSync.StatusTimeout, "Timeout for git status dirty check")
 	flag.Var(&verboseCount, "v", "Increase verbosity (-v=streaming, -vv=trace)")
 	flag.BoolVar(&includeArchived, "include-archived", true, "Include archived repos")
 	flag.BoolVar(&includeForks, "include-forks", false, "Include forked repos")
@@ -46,6 +48,9 @@ func run() int {
 	flag.BoolVar(&showVersion, "V", false, "Print version (shorthand)")
 
 	flag.Parse()
+
+	// Apply status timeout override.
+	rpSync.StatusTimeout = statusTimeout
 
 	if showVersion {
 		fmt.Printf("repoTrawl %s\nHenry (Haoran) Li — Athey Lab @UMich\n", version)
