@@ -156,6 +156,52 @@ func TestRunPool_Clone(t *testing.T) {
 	}
 }
 
+func TestGitEnv_HTTPSRewrite(t *testing.T) {
+	env := gitEnv()
+
+	// Verify core env vars are always present.
+	found := false
+	for _, e := range env {
+		if e == "GIT_TERMINAL_PROMPT=0" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected GIT_TERMINAL_PROMPT=0 in gitEnv()")
+	}
+
+	// When useHTTPSInsteadOfSSH is true, the rewrite config vars must be present.
+	origVal := useHTTPSInsteadOfSSH
+	defer func() { useHTTPSInsteadOfSSH = origVal }()
+
+	useHTTPSInsteadOfSSH = true
+	env = gitEnv()
+	var hasCount, hasKey, hasValue bool
+	for _, e := range env {
+		switch e {
+		case "GIT_CONFIG_COUNT=1":
+			hasCount = true
+		case "GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf":
+			hasKey = true
+		case "GIT_CONFIG_VALUE_0=git@github.com:":
+			hasValue = true
+		}
+	}
+	if !hasCount || !hasKey || !hasValue {
+		t.Errorf("expected HTTPS rewrite env vars when useHTTPSInsteadOfSSH=true, got count=%v key=%v value=%v", hasCount, hasKey, hasValue)
+	}
+
+	// When false, the rewrite key should not be injected by gitEnv.
+	useHTTPSInsteadOfSSH = false
+	env = gitEnv()
+	for _, e := range env {
+		if e == "GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf" {
+			t.Error("unexpected SSH-to-HTTPS rewrite key when useHTTPSInsteadOfSSH=false")
+		}
+	}
+}
+
 func gitRun(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
