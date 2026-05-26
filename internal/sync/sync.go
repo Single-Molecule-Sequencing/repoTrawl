@@ -19,13 +19,41 @@ const (
 	statusTimeout = 15 * time.Second
 )
 
-// gitEnv returns environment variables that suppress interactive prompts.
+// useHTTPSInsteadOfSSH is set once at startup by detecting whether the user
+// authenticates to GitHub over HTTPS (via gh or credential helper) rather than SSH.
+var useHTTPSInsteadOfSSH = detectHTTPSAuth()
+
+// detectHTTPSAuth returns true if the user's GitHub auth is HTTPS-based,
+// meaning SSH-style submodule URLs (git@github.com:...) would fail without
+// a URL rewrite.
+func detectHTTPSAuth() bool {
+	// Check if gh CLI is authenticated with HTTPS protocol.
+	cmd := exec.Command("gh", "auth", "status")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// gh not installed or not authenticated — can't determine, assume SSH might work.
+		return false
+	}
+	// gh auth status prints the protocol (https or ssh).
+	// If it mentions "https" as the git protocol, SSH URLs will likely fail.
+	return strings.Contains(strings.ToLower(string(out)), "git protocol: https")
+}
+
+// gitEnv returns environment variables that suppress interactive prompts
+// and, when HTTPS auth is detected, rewrite SSH URLs to HTTPS.
 func gitEnv() []string {
 	env := os.Environ()
 	env = append(env,
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
 	)
+	if useHTTPSInsteadOfSSH {
+		env = append(env,
+			"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf",
+			"GIT_CONFIG_VALUE_0=git@github.com:",
+		)
+	}
 	return env
 }
 
