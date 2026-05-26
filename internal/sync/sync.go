@@ -15,9 +15,12 @@ const (
 	pullTimeout = 2 * time.Minute
 	// cloneTimeout is the deadline for a single git clone + submodule update.
 	cloneTimeout = 10 * time.Minute
-	// statusTimeout is the deadline for git status --porcelain.
-	statusTimeout = 15 * time.Second
 )
+
+// StatusTimeout is the deadline for git status --porcelain.
+// Default is 60s to accommodate WSL/NTFS cross-filesystem latency on large repos.
+// Override via the -status-timeout CLI flag.
+var StatusTimeout = 60 * time.Second
 
 // useHTTPSInsteadOfSSH is set once at startup by detecting whether the user
 // authenticates to GitHub over HTTPS (via gh or credential helper) rather than SSH.
@@ -59,7 +62,7 @@ func gitEnv() []string {
 
 // IsDirty returns true if the repo at dir has uncommitted changes.
 func IsDirty(ctx context.Context, dir string) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
+	ctx, cancel := context.WithTimeout(ctx, StatusTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
@@ -67,7 +70,7 @@ func IsDirty(ctx context.Context, dir string) (bool, error) {
 	cmd.Env = gitEnv()
 	out, err := cmd.Output()
 	if ctx.Err() == context.DeadlineExceeded {
-		return false, fmt.Errorf("git status timed out after %s", statusTimeout)
+		return false, fmt.Errorf("git status timed out after %s", StatusTimeout)
 	}
 	if err != nil {
 		return false, fmt.Errorf("git status: %w", err)
