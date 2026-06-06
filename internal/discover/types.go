@@ -7,6 +7,7 @@ type RepoInfo struct {
 	Org      string
 	Archived bool
 	Fork     bool
+	PushedAt string // last push timestamp (ISO 8601); proxy for "last activity"
 }
 
 // LocalRepo represents a git repository found on the local filesystem.
@@ -21,8 +22,8 @@ type LocalRepo struct {
 // ScanResult holds the output of scanning a directory for repos and orgs.
 type ScanResult struct {
 	LocalRepos []LocalRepo
-	Orgs       []string  // deduplicated orgs found
-	Protocol   string    // majority protocol detected
+	Orgs       []string // deduplicated orgs found
+	Protocol   string   // majority protocol detected
 	Warnings   []string
 }
 

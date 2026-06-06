@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Single-Molecule-Sequencing/repotrawl/internal/discover"
+	"github.com/Single-Molecule-Sequencing/repotrawl/internal/marker"
 	"github.com/Single-Molecule-Sequencing/repotrawl/internal/output"
 	rpSync "github.com/Single-Molecule-Sequencing/repotrawl/internal/sync"
 )
@@ -32,6 +33,7 @@ func run() int {
 		verboseCount    verboseFlag
 		includeArchived bool
 		includeForks    bool
+		markArchived    bool
 		dryRun          bool
 		showVersion     bool
 	)
@@ -43,6 +45,7 @@ func run() int {
 	flag.Var(&verboseCount, "v", "Increase verbosity (-v=streaming, -vv=trace)")
 	flag.BoolVar(&includeArchived, "include-archived", true, "Include archived repos")
 	flag.BoolVar(&includeForks, "include-forks", false, "Include forked repos")
+	flag.BoolVar(&markArchived, "archive-markers", true, "Write local ARCHIVED.md/.archived markers for archived repos (from GitHub's archived flag)")
 	flag.BoolVar(&dryRun, "dry-run", false, "Show plan without executing")
 	flag.BoolVar(&showVersion, "version", false, "Print version")
 	flag.BoolVar(&showVersion, "V", false, "Print version (shorthand)")
@@ -91,6 +94,10 @@ func run() int {
 
 	// Discover remote repos
 	var allTasks []rpSync.Task
+	// markerStates collects, keyed by local clone dir, the archive status to apply
+	// after sync. Built from the UNFILTERED remote list so archived repos are
+	// marked even when --include-archived=false drops them from the sync set.
+	markerStates := map[string]marker.State{}
 	ghOK := discover.GhAvailable(ctx)
 
 	if !ghOK && explicitOrg {
@@ -108,6 +115,17 @@ func run() int {
 			}
 			filtered := discover.FilterRepos(remoteRepos, includeArchived, includeForks)
 
+			// Index the UNFILTERED remote list once: knownNames lets ClassifyRepos
+			// tell a deliberately-excluded (archived/fork) local clone from an
+			// offline/personal one; remoteByName carries the archive status used to
+			// mark already-cloned repos even when they are filtered out of the sync.
+			knownNames := make(map[string]bool, len(remoteRepos))
+			remoteByName := make(map[string]discover.RepoInfo, len(remoteRepos))
+			for _, rr := range remoteRepos {
+				knownNames[rr.Name] = true
+				remoteByName[rr.Name] = rr
+			}
+
 			var orgLocalRepos []discover.LocalRepo
 			for _, lr := range scanResult.LocalRepos {
 				if strings.EqualFold(lr.Org, org) {
@@ -115,7 +133,20 @@ func run() int {
 				}
 			}
 
-			classified := discover.ClassifyRepos(orgLocalRepos, filtered, dir, scanResult.Protocol, org)
+			// Record archive status from the UNFILTERED remote list so already-
+			// cloned archived repos get marked even when they are filtered out of
+			// the sync set (e.g. --include-archived=false).
+			if markArchived {
+				for _, lr := range orgLocalRepos {
+					if rr, ok := remoteByName[lr.Name]; ok {
+						markerStates[lr.Path] = marker.State{
+							Name: lr.Name, Dir: lr.Path, Archived: rr.Archived, LastActivity: rr.PushedAt,
+						}
+					}
+				}
+			}
+
+			classified := discover.ClassifyRepos(orgLocalRepos, filtered, knownNames, dir, scanResult.Protocol, org)
 			for _, ct := range classified {
 				allTasks = append(allTasks, rpSync.Task{
 					RepoName: ct.RepoName,
@@ -123,6 +154,15 @@ func run() int {
 					CloneURL: ct.CloneURL,
 					LocalDir: ct.LocalDir,
 				})
+				// A freshly cloned repo lands at ct.LocalDir; record its archive
+				// status too (only archived repos reach here when includeArchived).
+				if markArchived && toSyncAction(ct.Action) == rpSync.ActionClone {
+					if rr, ok := remoteByName[ct.RepoName]; ok {
+						markerStates[ct.LocalDir] = marker.State{
+							Name: rr.Name, Dir: ct.LocalDir, Archived: rr.Archived, LastActivity: rr.PushedAt,
+						}
+					}
+				}
 			}
 		}
 	} else {
@@ -142,7 +182,7 @@ func run() int {
 		}
 	}
 
-	if len(allTasks) == 0 {
+	if len(allTasks) == 0 && (!markArchived || len(markerStates) == 0) {
 		fmt.Println("No repos found.")
 		return 0
 	}
@@ -156,38 +196,74 @@ func run() int {
 		return 0
 	}
 
-	// Execute
-	orgName := "multiple orgs"
-	if len(orgs) == 1 {
-		orgName = orgs[0]
-	}
-
-	cfg := output.Config{
-		Verbosity: verbosity,
-		Color:     isTTY,
-		OrgName:   orgName,
-	}
-
-	var progressFn rpSync.ProgressFunc
-	if verbosity == output.VerboseStreaming {
-		progressFn = func(idx, total int, r rpSync.Result) {
-			output.RenderVerboseLine(os.Stdout, idx, total, r, isTTY)
+	// Execute the sync pool. Skip it entirely when there are no sync tasks but we
+	// still have archive markers to reconcile (e.g. only already-cloned archived
+	// repos under --include-archived=false).
+	var results []rpSync.Result
+	if len(allTasks) > 0 {
+		orgName := "multiple orgs"
+		if len(orgs) == 1 {
+			orgName = orgs[0]
 		}
-	} else if verbosity == output.VerboseTrace {
-		progressFn = func(idx, total int, r rpSync.Result) {
-			output.RenderTraceLine(os.Stdout, idx, total, r)
+
+		cfg := output.Config{
+			Verbosity: verbosity,
+			Color:     isTTY,
+			OrgName:   orgName,
+		}
+
+		var progressFn rpSync.ProgressFunc
+		if verbosity == output.VerboseStreaming {
+			progressFn = func(idx, total int, r rpSync.Result) {
+				output.RenderVerboseLine(os.Stdout, idx, total, r, isTTY)
+			}
+		} else if verbosity == output.VerboseTrace {
+			progressFn = func(idx, total int, r rpSync.Result) {
+				output.RenderTraceLine(os.Stdout, idx, total, r)
+			}
+		}
+
+		start := time.Now()
+		results = rpSync.RunPool(ctx, allTasks, jobsFlag, progressFn)
+		elapsed := time.Since(start).Milliseconds()
+
+		// Report
+		if verbosity >= output.VerboseStreaming {
+			fmt.Println()
+		}
+		output.RenderSummaryTable(os.Stdout, results, cfg, elapsed)
+	}
+
+	// Reconcile local archive markers from GitHub's authoritative archived flag,
+	// making "archived" visible on the filesystem for humans and LLM agents.
+	if markArchived && len(markerStates) > 0 {
+		states := make([]marker.State, 0, len(markerStates))
+		for _, s := range markerStates {
+			states = append(states, s)
+		}
+		markerResults := marker.Reconcile(states, version)
+		var marked, unmarked, skipped int
+		for _, mr := range markerResults {
+			switch mr.Action {
+			case marker.ActionMarked:
+				marked++
+			case marker.ActionUnmarked:
+				unmarked++
+			case marker.ActionSkipped:
+				skipped++
+				if verbosity >= output.VerboseStreaming {
+					fmt.Fprintf(os.Stderr, "archive-marker: %s: pre-existing ARCHIVED.md/.archived left untouched\n", mr.Name)
+				}
+			case marker.ActionError:
+				// Surface at default verbosity: a silent marker failure would let an
+				// archived repo masquerade as active on the filesystem.
+				fmt.Fprintf(os.Stderr, "archive-marker: %s: %v\n", mr.Name, mr.Err)
+			}
+		}
+		if (marked > 0 || unmarked > 0 || skipped > 0) && verbosity >= output.VerboseStreaming {
+			fmt.Printf("archive markers: %d marked, %d unmarked, %d skipped\n", marked, unmarked, skipped)
 		}
 	}
-
-	start := time.Now()
-	results := rpSync.RunPool(ctx, allTasks, jobsFlag, progressFn)
-	elapsed := time.Since(start).Milliseconds()
-
-	// Report
-	if verbosity >= output.VerboseStreaming {
-		fmt.Println()
-	}
-	output.RenderSummaryTable(os.Stdout, results, cfg, elapsed)
 
 	hasFailure := false
 	hasPartial := false

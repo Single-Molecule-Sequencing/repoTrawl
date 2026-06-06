@@ -28,6 +28,9 @@ repotrawl — Single-Molecule-Sequencing (92 repos)
 - **Parallel execution**: goroutine worker pool with configurable concurrency
 - **Auto-discovery**: detects the GitHub org from local repo remotes
 - **New repo cloning**: discovers repos via `gh` API, clones any missing locally
+- **Archive markers**: writes a conspicuous local `ARCHIVED.md` + `.archived` into
+  archived clones (from GitHub's `archived` flag) so humans and LLM agents can tell
+  at a glance that a repo is stale — see [Archive markers](#archive-markers)
 - **Safe by default**: skips dirty repos, uses `--ff-only`, never force-pushes
 - **Submodule support**: runs `git submodule update --init --recursive` after pull/clone
 - **Timeout protection**: per-operation deadlines prevent hanging on credential prompts
@@ -84,6 +87,9 @@ repotrawl --include-forks
 
 # Exclude archived repos (included by default)
 repotrawl --include-archived=false
+
+# Disable writing local ARCHIVED.md/.archived markers (on by default)
+repotrawl --archive-markers=false
 ```
 
 ## Flags
@@ -98,9 +104,43 @@ repotrawl --include-archived=false
 | `--dry-run`          | `false`           | Show plan without executing            |
 | `--include-archived` | `true`            | Include archived repositories          |
 | `--include-forks`    | `false`           | Include forked repositories            |
+| `--archive-markers`  | `true`            | Write local `ARCHIVED.md`/`.archived` markers for archived repos |
 | `-V`, `--version`    |                   | Print version and exit                 |
 
 ## Behavior
+
+### Archive markers
+
+The `archived` state of a repository lives in GitHub metadata, which is invisible
+to anyone — human or LLM agent — working from a local clone. On every run,
+repoTrawl makes it visible: for each archived repository that exists locally it
+writes two **untracked** files into the clone root:
+
+- `ARCHIVED.md` — an emoji-free banner that sorts to the top of a file listing and
+  reads `ARCHIVED — DO NOT USE`, with `last_activity` and the marker version.
+- `.archived` — a minimal `key=value` file (`archived=true`, `last_activity=…`)
+  for cheap programmatic checks (`test -f .archived`).
+
+The markers are added to `.git/info/exclude`, so they never dirty the working tree
+and never need to be committed (archived repos are read-only on GitHub anyway).
+They are not propagated through git — they propagate through the **binary**: every
+member who runs repoTrawl regenerates them locally from the same authoritative
+GitHub flag. The reconcile is **self-healing**: un-archiving a repository removes
+its markers on the next run. Disable with `--archive-markers=false`.
+
+This works independently of `--include-archived`: an already-cloned archived repo
+is marked even when `--include-archived=false` keeps it out of the sync set. With
+`--include-archived=false`, an already-cloned archived repo is also excluded from
+pulls (it is no longer re-added by the offline-pull fallback) — pair the two to
+both drop archived repos from the sync *and* flag any that already exist locally.
+
+**Safety.** repoTrawl only writes, refreshes, or removes files carrying its own
+sentinel. A pre-existing `ARCHIVED.md`/`.archived` it did not generate is never
+overwritten or deleted — that repo is reported as `skipped` instead. The
+`.git/info/exclude` entries live in a delimited, newline-safe managed block that is
+removed cleanly when a repo is un-archived, and worktree/submodule clones (whose
+`.git` is a file, not a directory) are skipped because their excludes cannot be
+managed safely.
 
 ### Pull strategy
 
@@ -168,6 +208,9 @@ go test ./internal/sync/ -v -run TestRunPool
 │   │   ├── types.go             # Action, Status enums, Task, Result
 │   │   ├── sync.go              # Worker pool, git pull/clone, timeout handling
 │   │   └── sync_test.go
+│   ├── marker/
+│   │   ├── marker.go            # Local ARCHIVED.md/.archived reconcile from the archived flag
+│   │   └── marker_test.go
 │   └── output/
 │       ├── types.go             # Verbosity, Config
 │       ├── output.go            # Summary table, verbose/trace rendering

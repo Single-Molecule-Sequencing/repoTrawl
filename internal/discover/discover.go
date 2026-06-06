@@ -164,6 +164,7 @@ type ghRepoEntry struct {
 	SSHURL   string `json:"ssh_url"`
 	Archived bool   `json:"archived"`
 	Fork     bool   `json:"fork"`
+	PushedAt string `json:"pushed_at"`
 }
 
 // ParseGhRepoJSON parses the JSON output from gh api /orgs/{org}/repos.
@@ -181,6 +182,7 @@ func ParseGhRepoJSON(data []byte, org string) ([]RepoInfo, error) {
 			Org:      org,
 			Archived: e.Archived,
 			Fork:     e.Fork,
+			PushedAt: e.PushedAt,
 		})
 	}
 	return repos, nil
@@ -260,6 +262,7 @@ func parsePaginatedJSON(data []byte, org string) ([]RepoInfo, error) {
 			Org:      org,
 			Archived: e.Archived,
 			Fork:     e.Fork,
+			PushedAt: e.PushedAt,
 		})
 	}
 	return repos, nil
@@ -276,7 +279,14 @@ func GhAvailable(ctx context.Context) bool {
 }
 
 // ClassifyRepos compares remote repos against local repos and produces tasks.
-func ClassifyRepos(local []LocalRepo, remote []RepoInfo, baseDir, protocol, org string) []ClassifiedTask {
+//
+// knownNames is the set of ALL repo names in the org BEFORE archived/fork
+// filtering. A local repo that is absent from the filtered `remote` list but
+// present in knownNames was deliberately excluded (archived/fork) and produces no
+// task; one absent from both is treated as offline/personal and is pulled. Pass a
+// nil/empty knownNames to keep the legacy "pull every unmatched local repo"
+// behavior.
+func ClassifyRepos(local []LocalRepo, remote []RepoInfo, knownNames map[string]bool, baseDir, protocol, org string) []ClassifiedTask {
 	localByName := make(map[string]LocalRepo)
 	for _, lr := range local {
 		localByName[lr.Name] = lr
@@ -303,9 +313,11 @@ func ClassifyRepos(local []LocalRepo, remote []RepoInfo, baseDir, protocol, org 
 		}
 	}
 
-	// Pull local repos not in the remote list (offline pull mode)
+	// Pull local repos that are not in the org at all (offline/personal). A local
+	// repo that IS in the org but was filtered out (archived/fork) is deliberately
+	// excluded and gets no task.
 	for _, lr := range local {
-		if !remoteByName[lr.Name] {
+		if !remoteByName[lr.Name] && !knownNames[lr.Name] {
 			tasks = append(tasks, ClassifiedTask{
 				RepoName: lr.Name,
 				Action:   "pull",

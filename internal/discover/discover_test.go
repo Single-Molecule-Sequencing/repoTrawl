@@ -242,7 +242,8 @@ func TestClassifyRepos(t *testing.T) {
 		{Name: "new-repo", CloneURL: "https://github.com/Org/new-repo.git", Org: "Org"},
 	}
 
-	tasks := ClassifyRepos(localRepos, remoteRepos, tmp, "ssh", "Org")
+	knownNames := map[string]bool{"existing-repo": true, "new-repo": true}
+	tasks := ClassifyRepos(localRepos, remoteRepos, knownNames, tmp, "ssh", "Org")
 
 	var pullCount, cloneCount int
 	for _, task := range tasks {
@@ -259,6 +260,32 @@ func TestClassifyRepos(t *testing.T) {
 	}
 	if cloneCount != 1 {
 		t.Errorf("expected 1 clone task, got %d", cloneCount)
+	}
+}
+
+// TestClassifyReposExcludesFilteredLocal verifies that a local clone which is in
+// the org but filtered out of the remote set (e.g. archived under
+// --include-archived=false) produces NO task, while a genuinely offline/personal
+// local repo (absent from knownNames) is still pulled.
+func TestClassifyReposExcludesFilteredLocal(t *testing.T) {
+	tmp := t.TempDir()
+
+	localRepos := []LocalRepo{
+		{Name: "archived-repo", Path: filepath.Join(tmp, "archived-repo"), Org: "Org"},
+		{Name: "offline-repo", Path: filepath.Join(tmp, "offline-repo"), Org: "Org"},
+	}
+
+	// archived-repo was filtered out of the sync set, but it IS known to the org.
+	filtered := []RepoInfo{}
+	knownNames := map[string]bool{"archived-repo": true}
+
+	tasks := ClassifyRepos(localRepos, filtered, knownNames, tmp, "ssh", "Org")
+
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d: %+v", len(tasks), tasks)
+	}
+	if tasks[0].RepoName != "offline-repo" || tasks[0].Action != "pull" {
+		t.Errorf("expected pull of offline-repo, got %+v", tasks[0])
 	}
 }
 
