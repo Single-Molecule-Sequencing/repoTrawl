@@ -113,6 +113,33 @@ func GitSubmoduleUpdate(ctx context.Context, dir string) (string, error) {
 	return string(out), err
 }
 
+// classifyPullError maps a failed `git pull --ff-only` to a Status and summary.
+// Two outcomes are treated as non-fatal skips (⚠) rather than failures (✗),
+// consistent with repoTrawl's safe-by-default philosophy (it already skips
+// dirty repos):
+//   - history that has diverged and cannot fast-forward, and
+//   - a tracked upstream branch that does not exist on the remote — an empty
+//     repository with no default branch, or a branch deleted/renamed upstream.
+//     Git reports this as "no such ref was fetched".
+//
+// Anything else is a genuine failure.
+func classifyPullError(pullOut string, pullErr error) (Status, string) {
+	switch {
+	case strings.Contains(pullOut, "divergent") ||
+		strings.Contains(pullOut, "Not possible to fast-forward") ||
+		strings.Contains(pullOut, "not possible to fast-forward"):
+		return StatusSkippedDiverged, "local branch has diverged"
+	case strings.Contains(pullOut, "no such ref was fetched"):
+		return StatusSkippedNoUpstream, "no upstream branch"
+	default:
+		summary := strings.TrimSpace(pullOut)
+		if summary == "" {
+			summary = pullErr.Error()
+		}
+		return StatusFailed, summary
+	}
+}
+
 // ParsePullSummary extracts a human-readable summary from git pull output.
 func ParsePullSummary(output string) string {
 	output = strings.TrimSpace(output)
@@ -242,19 +269,7 @@ func executePull(ctx context.Context, task Task) Result {
 	pullOut, err := GitPull(ctx, task.LocalDir)
 	r.Output = pullOut
 	if err != nil {
-		if strings.Contains(pullOut, "divergent") ||
-			strings.Contains(pullOut, "Not possible to fast-forward") ||
-			strings.Contains(pullOut, "not possible to fast-forward") {
-			r.Status = StatusSkippedDiverged
-			r.Summary = "local branch has diverged"
-		} else {
-			r.Status = StatusFailed
-			summary := strings.TrimSpace(pullOut)
-			if summary == "" {
-				summary = err.Error()
-			}
-			r.Summary = summary
-		}
+		r.Status, r.Summary = classifyPullError(pullOut, err)
 		return r
 	}
 

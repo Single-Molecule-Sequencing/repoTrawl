@@ -14,6 +14,7 @@ func TestCountResults(t *testing.T) {
 		{Status: sync.StatusUpToDate, Action: sync.ActionPull},
 		{Status: sync.StatusSuccess, Action: sync.ActionClone},
 		{Status: sync.StatusSkippedDirty, Action: sync.ActionPull},
+		{Status: sync.StatusSkippedNoUpstream, Action: sync.ActionPull},
 		{Status: sync.StatusFailed, Action: sync.ActionPull},
 		{Status: sync.StatusPartial, Action: sync.ActionPull},
 	}
@@ -25,8 +26,8 @@ func TestCountResults(t *testing.T) {
 	if c.Cloned != 1 {
 		t.Errorf("cloned = %d, want 1", c.Cloned)
 	}
-	if c.Skipped != 1 {
-		t.Errorf("skipped = %d, want 1", c.Skipped)
+	if c.Skipped != 2 {
+		t.Errorf("skipped = %d, want 2", c.Skipped)
 	}
 	if c.Failed != 1 {
 		t.Errorf("failed = %d, want 1", c.Failed)

@@ -32,6 +32,7 @@ const (
 	StatusUpToDate
 	StatusSkippedDirty
 	StatusSkippedDiverged
+	StatusSkippedNoUpstream
 	StatusPartial
 	StatusFailed
 )
@@ -46,6 +47,8 @@ func (s Status) String() string {
 		return "dirty"
 	case StatusSkippedDiverged:
 		return "diverged"
+	case StatusSkippedNoUpstream:
+		return "no upstream"
 	case StatusPartial:
 		return "partial"
 	case StatusFailed:
