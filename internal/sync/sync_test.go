@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,6 +66,53 @@ func TestParsePullSummary(t *testing.T) {
 	}
 }
 
+func TestClassifyPullError(t *testing.T) {
+	tests := []struct {
+		name       string
+		pullOut    string
+		wantStatus Status
+		wantSum    string
+	}{
+		{
+			"diverged",
+			"hint: Not possible to fast-forward, aborting.",
+			StatusSkippedDiverged,
+			"local branch has diverged",
+		},
+		{
+			"empty or deleted upstream",
+			"Your configuration specifies to merge with the ref 'refs/heads/main' " +
+				"from the remote, but no such ref was fetched.",
+			StatusSkippedNoUpstream,
+			"no upstream branch",
+		},
+		{
+			"genuine failure surfaces git output",
+			"fatal: unable to access remote: Could not resolve host",
+			StatusFailed,
+			"fatal: unable to access remote: Could not resolve host",
+		},
+		{
+			"empty output falls back to the error string",
+			"",
+			StatusFailed,
+			"boom",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotStatus, gotSum := classifyPullError(tt.pullOut, errors.New("boom"))
+			if gotStatus != tt.wantStatus {
+				t.Errorf("status = %s, want %s", gotStatus, tt.wantStatus)
+			}
+			if gotSum != tt.wantSum {
+				t.Errorf("summary = %q, want %q", gotSum, tt.wantSum)
+			}
+		})
+	}
+}
+
 func TestRunPool_PullClean(t *testing.T) {
 	tmp := t.TempDir()
 
@@ -120,6 +168,39 @@ func TestRunPool_DirtySkip(t *testing.T) {
 	}
 	if results[0].Status != StatusSkippedDirty {
 		t.Errorf("expected dirty skip, got %s: %s", results[0].Status, results[0].Summary)
+	}
+}
+
+func TestRunPool_NoUpstreamSkip(t *testing.T) {
+	tmp := t.TempDir()
+
+	bareDir := filepath.Join(tmp, "noup-bare.git")
+	gitRun(t, tmp, "git", "init", "--bare", "-b", "main", bareDir)
+
+	repoDir := filepath.Join(tmp, "noup-repo")
+	gitRun(t, tmp, "git", "clone", bareDir, repoDir)
+
+	// Establish a tracked main on the remote, then delete it there so the local
+	// checkout tracks an upstream ref that no longer exists — the same condition
+	// an empty repo (no default branch) or a deleted/renamed upstream branch
+	// produces: git pull fails with "no such ref was fetched".
+	os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# test"), 0o644)
+	gitRun(t, repoDir, "git", "add", ".")
+	gitRun(t, repoDir, "git", "commit", "-m", "init")
+	gitRun(t, repoDir, "git", "push", "-u", "origin", "main")
+	gitRun(t, tmp, "git", "--git-dir", bareDir, "update-ref", "-d", "refs/heads/main")
+
+	tasks := []Task{
+		{RepoName: "noup-repo", Action: ActionPull, LocalDir: repoDir},
+	}
+
+	results := RunPool(context.Background(), tasks, 2, nil)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Status != StatusSkippedNoUpstream {
+		t.Errorf("expected no-upstream skip, got %s: %s", results[0].Status, results[0].Summary)
 	}
 }
 

@@ -29,7 +29,7 @@ func CountResults(results []sync.Result) Counters {
 			c.Failed++
 		case r.Status == sync.StatusPartial:
 			c.Partial++
-		case r.Status == sync.StatusSkippedDirty || r.Status == sync.StatusSkippedDiverged:
+		case r.Status == sync.StatusSkippedDirty || r.Status == sync.StatusSkippedDiverged || r.Status == sync.StatusSkippedNoUpstream:
 			c.Skipped++
 		case r.Action == sync.ActionClone:
 			c.Cloned++
@@ -54,7 +54,7 @@ func statusIcon(s sync.Status, color bool) string {
 			return "\033[32m✓\033[0m"
 		}
 		return "✓"
-	case sync.StatusSkippedDirty, sync.StatusSkippedDiverged, sync.StatusPartial:
+	case sync.StatusSkippedDirty, sync.StatusSkippedDiverged, sync.StatusSkippedNoUpstream, sync.StatusPartial:
 		if color {
 			return "\033[33m⚠\033[0m"
 		}
@@ -75,7 +75,7 @@ func actionOrder(r sync.Result) int {
 		return 0
 	case r.Action == sync.ActionPull && (r.Status == sync.StatusSuccess || r.Status == sync.StatusUpToDate):
 		return 1
-	case r.Status == sync.StatusSkippedDirty || r.Status == sync.StatusSkippedDiverged:
+	case r.Status == sync.StatusSkippedDirty || r.Status == sync.StatusSkippedDiverged || r.Status == sync.StatusSkippedNoUpstream:
 		return 2
 	case r.Status == sync.StatusFailed:
 		return 3

@@ -4,6 +4,18 @@ All notable changes to repoTrawl are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 semantic versioning.
 
+## [Unreleased]
+
+### Changed
+- **Empty and missing-upstream repos are skipped, not failed.** A `git pull` that
+  fails only because the tracked upstream branch does not exist on the remote — an
+  empty repository with no default branch, or a branch deleted/renamed upstream —
+  is now reported as `⚠ no upstream branch` (skipped) instead of `✗ failed`. This
+  matches repoTrawl's safe-by-default philosophy (dirty and diverged repos already
+  skip) and keeps the exit code at success when the only "failures" are repos
+  there is genuinely nothing to pull from. Pull-error classification moved into a
+  unit-tested `classifyPullError` helper. New `StatusSkippedNoUpstream` outcome.
+
 ## [0.3.0] - 2026-06-06
 
 ### Added
