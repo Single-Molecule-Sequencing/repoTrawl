@@ -4,7 +4,7 @@ All notable changes to repoTrawl are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 semantic versioning.
 
-## [Unreleased]
+## [0.3.1] - 2026-06-18
 
 ### Changed
 - **Empty and missing-upstream repos are skipped, not failed.** A `git pull` that
