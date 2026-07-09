@@ -90,6 +90,30 @@ func GitPull(ctx context.Context, dir string) (string, error) {
 	return string(out), err
 }
 
+// GitStash runs git stash --include-untracked in the given directory.
+func GitStash(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "stash", "--include-untracked")
+	cmd.Dir = dir
+	cmd.Env = gitEnv()
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(out), fmt.Errorf("git stash timed out")
+	}
+	return string(out), err
+}
+
+// GitStashPop runs git stash pop in the given directory.
+func GitStashPop(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "stash", "pop")
+	cmd.Dir = dir
+	cmd.Env = gitEnv()
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(out), fmt.Errorf("git stash pop timed out")
+	}
+	return string(out), err
+}
+
 // GitClone clones a repo into the given directory (full clone, no shallow).
 func GitClone(ctx context.Context, url, dir string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "clone", url, dir)
@@ -261,15 +285,22 @@ func executePull(ctx context.Context, task Task) Result {
 		return r
 	}
 	if dirty {
-		r.Status = StatusSkippedDirty
-		r.Summary = "uncommitted changes"
-		return r
+		stashOut, err := GitStash(ctx, task.LocalDir)
+		r.Output += stashOut
+		if err != nil {
+			r.Status = StatusFailed
+			r.Summary = "git stash failed"
+			return r
+		}
 	}
 
 	pullOut, err := GitPull(ctx, task.LocalDir)
-	r.Output = pullOut
+	r.Output += pullOut
 	if err != nil {
 		r.Status, r.Summary = classifyPullError(pullOut, err)
+		if dirty {
+			GitStashPop(ctx, task.LocalDir)
+		}
 		return r
 	}
 
@@ -280,6 +311,17 @@ func executePull(ctx context.Context, task Task) Result {
 		r.Status = StatusSuccess
 	}
 	r.Summary = summary
+
+	if dirty {
+		popOut, err := GitStashPop(ctx, task.LocalDir)
+		r.Output += popOut
+		if err != nil {
+			r.Status = StatusPartial
+			r.Summary += " (stash pop failed)"
+		} else {
+			r.Summary += " (stashed & popped)"
+		}
+	}
 
 	subOut, err := GitSubmoduleUpdate(ctx, task.LocalDir)
 	r.Output += subOut
