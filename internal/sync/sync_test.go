@@ -287,7 +287,11 @@ func gitRun(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	// scrubbedEnviron, not os.Environ: an inherited GIT_DIR outranks cmd.Dir,
+	// so without this every "hermetic" test below writes into whatever repo the
+	// caller was pushing from. That is the mechanism that destroyed
+	// lab-system's main on 2026-08-15. See gitdir_leak_test.go.
+	cmd.Env = append(scrubbedEnviron(),
 		"GIT_AUTHOR_NAME=test",
 		"GIT_AUTHOR_EMAIL=test@test.com",
 		"GIT_COMMITTER_NAME=test",

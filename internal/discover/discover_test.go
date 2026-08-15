@@ -293,6 +293,10 @@ func gitRun(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	// An inherited GIT_DIR outranks cmd.Dir, so without this a "hermetic" test
+	// writes into whatever repo the caller was pushing from. That mechanism
+	// destroyed lab-system's main on 2026-08-15. See gitdir_leak_test.go.
+	cmd.Env = scrubbedEnviron()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("command %s %v failed: %s\n%s", name, args, err, out)
 	}
