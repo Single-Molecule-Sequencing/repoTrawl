@@ -31,39 +31,9 @@ import (
 // Go has no conftest.py, so unlike the Python repos this scrub in the test
 // helper is the only in-repo layer available.
 
-// redirectingGitVars are the variables that can point git at a repository
-// other than the one implied by cmd.Dir. Dropping all of them is what makes a
-// child process safe.
-var redirectingGitVars = []string{
-	"GIT_DIR",
-	"GIT_WORK_TREE",
-	"GIT_INDEX_FILE",
-	"GIT_OBJECT_DIRECTORY",
-	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
-	"GIT_COMMON_DIR",
-	"GIT_NAMESPACE",
-}
-
-// scrubbedEnviron is os.Environ() with every repo-redirecting git variable
-// removed. Everything else is passed through: the commands still need PATH,
-// HOME and the rest.
-func scrubbedEnviron() []string {
-	env := os.Environ()
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		drop := false
-		for _, name := range redirectingGitVars {
-			if strings.HasPrefix(kv, name+"=") {
-				drop = true
-				break
-			}
-		}
-		if !drop {
-			out = append(out, kv)
-		}
-	}
-	return out
-}
+// scrubbedEnviron and redirectingGitVars now live in sync.go, because the
+// production code needs them too: gitEnv() feeds every git command this
+// package runs.
 
 // mustGit runs git for TEST SETUP with an explicitly clean environment, so the
 // fixtures this guard depends on cannot themselves be redirected.
@@ -92,6 +62,37 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v failed: %s\n%s", args, err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// TestGitEnvDropsInheritedGitDir covers the PRODUCTION path. gitEnv() feeds
+// cmd.Env at sync.go:70, :85, :96 and :108, every one of them paired with a
+// cmd.Dir. repoTrawl's whole job is running git across many clones, so an
+// inherited GIT_DIR would silently aim all of them at one repo.
+func TestGitEnvDropsInheritedGitDir(t *testing.T) {
+	t.Setenv("GIT_DIR", "/somewhere/.git")
+	t.Setenv("GIT_WORK_TREE", "/somewhere")
+
+	for _, kv := range gitEnv() {
+		if strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE=") {
+			t.Fatalf("gitEnv() passed a repo-redirection variable to git: %s", kv)
+		}
+	}
+}
+
+// TestGitEnvKeepsItsOwnSettings guards against over-scrubbing: the prompt
+// suppression gitEnv exists to set must survive.
+func TestGitEnvKeepsItsOwnSettings(t *testing.T) {
+	t.Setenv("GIT_DIR", "/somewhere/.git")
+
+	var found bool
+	for _, kv := range gitEnv() {
+		if kv == "GIT_TERMINAL_PROMPT=0" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("gitEnv() lost GIT_TERMINAL_PROMPT=0")
+	}
 }
 
 // TestScrubbedEnvironDropsRedirectionVariables pins the helper itself.

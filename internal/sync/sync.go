@@ -42,10 +42,49 @@ func detectHTTPSAuth() bool {
 	return strings.Contains(strings.ToLower(string(out)), "git protocol: https")
 }
 
+// redirectingGitVars can point git at a repository other than the one implied
+// by cmd.Dir. GIT_DIR outranks cmd.Dir, and with GIT_DIR set but GIT_WORK_TREE
+// unset git treats the CURRENT directory as the work tree. repoTrawl runs git
+// across many clones and distinguishes them ONLY by cmd.Dir, so inheriting
+// these would silently aim every operation at one repo.
+//
+// Not hypothetical: the same mechanism destroyed lab-system's main on
+// 2026-08-15, when a pre-push hook exported GIT_DIR into a test suite.
+// See lab-system/docs/failures/2026-08-15-gitdir-leak-into-pytest.md
+var redirectingGitVars = []string{
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_COMMON_DIR",
+	"GIT_NAMESPACE",
+}
+
+// scrubbedEnviron is os.Environ() minus every repo-redirecting git variable.
+// Everything else is passed through: git still needs PATH, HOME and the rest.
+func scrubbedEnviron() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		drop := false
+		for _, name := range redirectingGitVars {
+			if strings.HasPrefix(kv, name+"=") {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 // gitEnv returns environment variables that suppress interactive prompts
 // and, when HTTPS auth is detected, rewrite SSH URLs to HTTPS.
 func gitEnv() []string {
-	env := os.Environ()
+	env := scrubbedEnviron()
 	env = append(env,
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
