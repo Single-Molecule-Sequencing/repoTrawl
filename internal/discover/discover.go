@@ -147,6 +147,10 @@ func gitRemoteURL(ctx context.Context, dir string) (string, error) {
 
 	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
 	cmd.Dir = dir
+	// An inherited GIT_DIR outranks cmd.Dir, so without this the answer is the
+	// WRONG repo's origin and repoTrawl goes on to classify and act on a repo
+	// it never looked at. See gitdir_leak_test.go.
+	cmd.Env = scrubbedEnviron()
 	out, err := cmd.Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("git remote get-url timed out after %s", remoteURLTimeout)
@@ -211,10 +215,46 @@ func SelectCloneURL(repo RepoInfo, protocol, org string) string {
 	return repo.CloneURL
 }
 
-// ghEnv returns environment variables that suppress interactive prompts for gh CLI.
-func ghEnv() []string {
+// redirectingGitVars can point git at a repository other than the one implied
+// by cmd.Dir. GIT_DIR outranks cmd.Dir, and with GIT_DIR set but GIT_WORK_TREE
+// unset git treats the CURRENT directory as the work tree. discover
+// distinguishes clones ONLY by cmd.Dir, so inheriting these makes it answer
+// about the wrong repo. Same mechanism that destroyed lab-system's main on
+// 2026-08-15: lab-system/docs/failures/2026-08-15-gitdir-leak-into-pytest.md
+var redirectingGitVars = []string{
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_COMMON_DIR",
+	"GIT_NAMESPACE",
+}
+
+// scrubbedEnviron is os.Environ() minus every repo-redirecting git variable.
+func scrubbedEnviron() []string {
 	env := os.Environ()
-	env = append(env, "GH_PROMPT_DISABLED=1")
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		drop := false
+		for _, name := range redirectingGitVars {
+			if strings.HasPrefix(kv, name+"=") {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// ghEnv returns environment variables that suppress interactive prompts for gh CLI.
+// Built on the scrubbed environment too: `gh` shells out to git for several
+// subcommands, so a leaked GIT_DIR would reach git through this door as well.
+func ghEnv() []string {
+	env := append(scrubbedEnviron(), "GH_PROMPT_DISABLED=1")
 	return env
 }
 

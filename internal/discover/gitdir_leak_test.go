@@ -1,6 +1,7 @@
 package discover
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,34 +15,8 @@ import (
 //
 // See lab-system/docs/failures/2026-08-15-gitdir-leak-into-pytest.md
 
-var redirectingGitVars = []string{
-	"GIT_DIR",
-	"GIT_WORK_TREE",
-	"GIT_INDEX_FILE",
-	"GIT_OBJECT_DIRECTORY",
-	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
-	"GIT_COMMON_DIR",
-	"GIT_NAMESPACE",
-}
-
-// scrubbedEnviron is os.Environ() minus every repo-redirecting git variable.
-func scrubbedEnviron() []string {
-	env := os.Environ()
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		drop := false
-		for _, name := range redirectingGitVars {
-			if strings.HasPrefix(kv, name+"=") {
-				drop = true
-				break
-			}
-		}
-		if !drop {
-			out = append(out, kv)
-		}
-	}
-	return out
-}
+// scrubbedEnviron and redirectingGitVars now live in discover.go, because the
+// production code needs them too: gitRemoteURL and ghEnv both use them.
 
 func setupGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
@@ -68,6 +43,35 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v failed: %s\n%s", args, err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// TestGitRemoteURLIgnoresAnInheritedGitDir covers the PRODUCTION path.
+// gitRemoteURL sets cmd.Dir and no cmd.Env, so an inherited GIT_DIR makes it
+// report the WRONG repo's origin: repoTrawl would then classify, and act on,
+// a repo it never looked at. Two repos with different origins make that
+// concrete -- asking about B must answer B.
+func TestGitRemoteURLIgnoresAnInheritedGitDir(t *testing.T) {
+	mk := func(name, origin string) string {
+		dir := filepath.Join(t.TempDir(), name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		setupGit(t, dir, "init", "-q")
+		setupGit(t, dir, "remote", "add", "origin", origin)
+		return dir
+	}
+	repoA := mk("a", "git@github.com:Org/AAA.git")
+	repoB := mk("b", "git@github.com:Org/BBB.git")
+
+	t.Setenv("GIT_DIR", filepath.Join(repoA, ".git"))
+
+	got, err := gitRemoteURL(context.Background(), repoB)
+	if err != nil {
+		t.Fatalf("gitRemoteURL(repoB) failed: %v", err)
+	}
+	if got != "git@github.com:Org/BBB.git" {
+		t.Fatalf("an inherited GIT_DIR redirected gitRemoteURL: asked about repoB, got %q", got)
+	}
 }
 
 func TestDiscoverGitRunCannotWriteIntoAnInheritedGitDir(t *testing.T) {
