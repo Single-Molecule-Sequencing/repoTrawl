@@ -98,11 +98,16 @@ func run() int {
 	// after sync. Built from the UNFILTERED remote list so archived repos are
 	// marked even when --include-archived=false drops them from the sync set.
 	markerStates := map[string]marker.State{}
-	ghOK := discover.GhAvailable(ctx)
+	// Keep the REASON, not just the boolean. "not available or not
+	// authenticated" named three different failures with one sentence, and on
+	// 2026-08-24 it named the wrong one: gh was installed and authenticated,
+	// and the probe had merely timed out against a locked system keyring.
+	ghErr := discover.GhProbe(ctx)
+	ghOK := ghErr == nil
 
 	if !ghOK && explicitOrg {
-		fmt.Fprintf(os.Stderr, "error: --org specified but gh CLI is not available or not authenticated\n")
-		fmt.Fprintf(os.Stderr, "Run: gh auth login\n")
+		fmt.Fprintf(os.Stderr, "error: --org specified but the gh probe failed: %v\n", ghErr)
+		fmt.Fprintf(os.Stderr, "If gh is genuinely signed out, run: gh auth login\n")
 		return 2
 	}
 
