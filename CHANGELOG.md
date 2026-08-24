@@ -4,6 +4,50 @@ All notable changes to repoTrawl are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 semantic versioning.
 
+## [0.4.0] - 2026-08-24
+
+### Fixed
+- **A startup probe with no timeout could wedge the whole binary.** `internal/sync`
+  detected the git protocol from a PACKAGE-LEVEL initializer, so it ran before
+  `main()`, before flag parsing, and before `-V` could print a version and return.
+  It shelled out to `gh auth status` with no context and no timeout at all, so
+  anything that made that command slow made every repoTrawl invocation slow, and
+  anything that made it block made every invocation block. On the Athey Lab hub on
+  2026-08-24 that meant `repoupdater -V` never returned: not a sync, not a flag,
+  just the version. It now asks `gh config get git_protocol`, which reads the same
+  answer out of the config files, never consults the system keyring, and returned
+  in 0.04s on the host where `gh auth status` returned never. Bounded by a 3s
+  context regardless.
+
+- **`gh auth status` is no longer used to decide whether gh is usable.**
+  `discover.GhAvailable` probed with it under a 10s timeout, and `gh auth status`
+  is the one gh subcommand that reaches into the system secret service: it can
+  fall through to the keyring for any account whose token is not sitting in
+  plaintext in `hosts.yml`. On a headless host with a locked keyring and no
+  prompter, that call waits on an unlock dialog nobody can answer. The 10s
+  deadline then fired and repoTrawl reported "gh CLI is not available or not
+  authenticated" on a host where `gh api user` answered in 0.27s with the same
+  token. The probe is now `gh api user`, measured at 0 D-Bus connects versus 1 for
+  `auth status`, and it has the side benefit of proving the token actually WORKS
+  rather than merely that one is stored.
+
+### Added
+- **`discover.GhProbe`** returns the REASON the gh probe failed, so callers can
+  tell "gh is missing" from "gh is signed out" from "gh never answered".
+  `--org` failures now report that reason instead of the single blanket sentence
+  "not available or not authenticated", which named three different failures at
+  once and named the wrong one.
+
+### Notes
+- Both probes set `cmd.WaitDelay`. This is load-bearing, not defensive style:
+  `exec.CommandContext` kills only the direct child while `CombinedOutput` waits
+  for the output pipes to reach EOF, so a surviving grandchild can hold a probe
+  open long past its deadline. A timeout fixture caught exactly that in the first
+  draft of this fix, where a "fixed" probe still sat for 30s against a 250ms
+  deadline.
+- Every package's test binary ran that startup initializer too, so the suite was
+  paying the same cost: `go test ./...` went from roughly 362s to roughly 9s.
+
 ## [0.3.1] - 2026-06-18
 
 ### Changed
