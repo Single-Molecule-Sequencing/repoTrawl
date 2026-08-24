@@ -22,6 +22,10 @@ const (
 // Override via the -status-timeout CLI flag.
 var StatusTimeout = 60 * time.Second
 
+// httpsDetectTimeout bounds the startup protocol probe. It runs before main(),
+// so anything unbounded here is unbounded for the WHOLE program.
+const httpsDetectTimeout = 3 * time.Second
+
 // useHTTPSInsteadOfSSH is set once at startup by detecting whether the user
 // authenticates to GitHub over HTTPS (via gh or credential helper) rather than SSH.
 var useHTTPSInsteadOfSSH = detectHTTPSAuth()
@@ -29,17 +33,40 @@ var useHTTPSInsteadOfSSH = detectHTTPSAuth()
 // detectHTTPSAuth returns true if the user's GitHub auth is HTTPS-based,
 // meaning SSH-style submodule URLs (git@github.com:...) would fail without
 // a URL rewrite.
+//
+// This is a PACKAGE-LEVEL INITIALIZER: Go runs it before main(), before flag
+// parsing, before `-V` can print a version and return. So it has to be bounded,
+// and it must not touch anything capable of prompting.
+//
+// It used to be `exec.Command("gh", "auth", "status")` with no context and no
+// timeout, which is the worst possible pair of properties in this position.
+// `gh auth status` resolves the ACTIVE account from hosts.yml but then walks
+// every OTHER user in that file through the system secret service, and on a
+// headless host whose keyring collection is LOCKED that call waits forever on
+// an unlock prompt no one can answer (gcr-prompter is a GTK app and there is no
+// display). Measured 2026-08-24 on the RDLU0053 hub: `repoupdater -V` never
+// returned at all, because the binary wedged HERE, before main() ever ran.
+//
+// `gh config get git_protocol` answers the same question from the config files,
+// never consults the keyring, and returned in 0.04s on the very host where
+// `gh auth status` did not return at all.
 func detectHTTPSAuth() bool {
-	// Check if gh CLI is authenticated with HTTPS protocol.
-	cmd := exec.Command("gh", "auth", "status")
+	ctx, cancel := context.WithTimeout(context.Background(), httpsDetectTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "gh", "config", "get", "git_protocol")
+	cmd.Env = scrubbedEnviron()
+	// CommandContext kills only the DIRECT child while CombinedOutput waits for
+	// the output pipes to reach EOF, so a surviving grandchild can hold this open
+	// long past the deadline. WaitDelay is what actually makes the timeout bind.
+	cmd.WaitDelay = time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// gh not installed or not authenticated — can't determine, assume SSH might work.
+		// gh missing, wedged, or unreadable config -- can't determine, so assume
+		// SSH might work, exactly as before.
 		return false
 	}
-	// gh auth status prints the protocol (https or ssh).
-	// If it mentions "https" as the git protocol, SSH URLs will likely fail.
-	return strings.Contains(strings.ToLower(string(out)), "git protocol: https")
+	return strings.EqualFold(strings.TrimSpace(string(out)), "https")
 }
 
 // redirectingGitVars can point git at a repository other than the one implied

@@ -3,6 +3,7 @@ package discover
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -14,9 +15,12 @@ import (
 
 const (
 	remoteURLTimeout = 5 * time.Second
-	ghAuthTimeout    = 10 * time.Second
 	ghListTimeout    = 60 * time.Second
 )
+
+// ghAuthTimeout is a var, not a const, only so the timeout branch of GhProbe is
+// testable in milliseconds instead of ten real seconds.
+var ghAuthTimeout = 10 * time.Second
 
 // ParseRemoteURL extracts the org, repo name, and protocol from a GitHub remote URL.
 func ParseRemoteURL(rawURL string) (org, repo, protocol string, err error) {
@@ -308,14 +312,74 @@ func parsePaginatedJSON(data []byte, org string) ([]RepoInfo, error) {
 	return repos, nil
 }
 
-// GhAvailable checks if the gh CLI is installed and authenticated.
+// ghProbeArgs is the gh availability probe.
+//
+// It is deliberately NOT `gh auth status`. That command enumerates every user
+// in hosts.yml and consults the system secret service for each one, so on a
+// headless host whose keyring collection is LOCKED it blocks forever on an
+// unlock prompt that nothing is present to answer. Measured 2026-08-24 on the
+// RDLU0053 hub: `gh auth status` never returned (>2 min, holding a D-Bus
+// socket to /run/user/1002/bus) while `gh api user` answered in 0.27s with the
+// same token from the same hosts.yml. ghAuthTimeout then fired and the probe
+// reported "not authenticated" for a host that was fully authenticated, so
+// every --org run exited 2 and the caller's rate-limit stamp never armed,
+// which made a whole-org sync re-run, and re-fail, on every session start.
+//
+// `gh api user` is a strictly better probe on every axis: it cannot wedge on
+// the keyring, it is faster, and unlike `gh auth status` it proves the token
+// actually WORKS rather than merely that one is stored.
+var ghProbeArgs = []string{"api", "user"}
+
+// GhAvailable reports whether the gh CLI is installed and usable.
 func GhAvailable(ctx context.Context) bool {
+	return GhProbe(ctx) == nil
+}
+
+// GhProbe runs the availability probe and returns WHY it failed, so a caller
+// can tell "gh is missing" from "gh is signed out" from "gh never answered".
+// Collapsing those three into one message is what told an operator to run
+// `gh auth login` on a host whose authentication was never the problem.
+func GhProbe(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, ghAuthTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "gh", "auth", "status")
+	cmd := exec.CommandContext(ctx, "gh", ghProbeArgs...)
 	cmd.Env = ghEnv()
-	return cmd.Run() == nil
+	// WaitDelay is what actually makes the timeout binding, and leaving it unset
+	// reintroduces the very hang this probe exists to avoid. CommandContext kills
+	// only the DIRECT child on deadline, while CombinedOutput waits for the output
+	// pipes to reach EOF -- so any grandchild still holding those pipes keeps the
+	// probe blocked long past ghAuthTimeout. Caught by the timeout fixture below,
+	// which sat for 30s against a 250ms deadline before this line existed.
+	cmd.WaitDelay = 2 * time.Second
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	probe := "gh " + strings.Join(ghProbeArgs, " ")
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("`%s` did not answer within %s; gh is installed but wedged, "+
+			"which a LOCKED system keyring will do (check the Locked property of "+
+			"/org/freedesktop/secrets/aliases/default on the session bus)", probe, ghAuthTimeout)
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return fmt.Errorf("gh CLI not found on PATH")
+	}
+	if msg := firstLine(string(out)); msg != "" {
+		return fmt.Errorf("`%s` failed: %s", probe, msg)
+	}
+	return fmt.Errorf("`%s` failed: %w", probe, err)
+}
+
+// firstLine keeps a multi-line gh error readable on one status line.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // ClassifyRepos compares remote repos against local repos and produces tasks.
