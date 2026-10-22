@@ -4,6 +4,22 @@ All notable changes to repoTrawl are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 semantic versioning.
 
+## [0.4.1] - 2026-10-22
+
+### Fixed
+- **A pull no longer fails when another process fetches the same clone at the
+  same moment.** `git pull --ff-only` runs its own fetch and then merges what
+  FETCH_HEAD holds; a concurrent plain `git fetch origin` in the same clone
+  rewrites FETCH_HEAD with every branch in between, and the pull dies with
+  `fatal: Cannot fast-forward to multiple branches.` On the Athey Lab hub that
+  message fell through `classifyPullError` to `StatusFailed`, so the whole pass
+  exited 1 and the provisioner withheld its repo-sync stamp. In a throwaway
+  reproduction a concurrent fetch loop made 208 of 574 pulls fail this way. The
+  pull is now retried up to twice after a 500 ms pause, and only for that
+  message. A message that survives every retry is still reported as a failure,
+  because it is also what several `branch.<name>.merge` values in a clone's
+  config print permanently, and that misconfiguration must stay visible.
+
 ## [0.4.0] - 2026-08-24
 
 ### Fixed

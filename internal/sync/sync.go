@@ -156,6 +156,44 @@ func GitPull(ctx context.Context, dir string) (string, error) {
 	return string(out), err
 }
 
+const (
+	// multiBranchFFMsg is what `git pull --ff-only` prints when the fetch it
+	// just ran left more than one candidate in FETCH_HEAD. It happens when
+	// another process runs a plain `git fetch origin` in the same clone while
+	// the pull is in flight (the lab's refresh_runtime_clones.py and
+	// cs_skill_autoprovision.py both do): the second fetch rewrites FETCH_HEAD
+	// with every branch, and the pull's merge step then sees several of them.
+	// It is also what a clone with several branch.<name>.merge values prints
+	// PERMANENTLY, which is why a persistent occurrence is not retried away.
+	multiBranchFFMsg = "Cannot fast-forward to multiple branches"
+	// pullRaceRetries is how many EXTRA attempts a pull gets after that message.
+	pullRaceRetries = 2
+)
+
+// pullRetryBackoff is the pause before each retry. A var so tests do not sleep.
+var pullRetryBackoff = 500 * time.Millisecond
+
+// pullRunner performs one pull attempt. A var so tests can fake git.
+var pullRunner = GitPull
+
+// pullWithRaceRetry runs a pull and retries it after a short backoff, but only
+// when the failure is the concurrent-fetch race (multiBranchFFMsg). Every other
+// outcome is returned on the first attempt, and a race message that survives
+// every retry is returned as the failure it then is: several merge values in
+// the clone's config is a real misconfiguration and must stay visible.
+func pullWithRaceRetry(ctx context.Context, dir string) (string, error) {
+	out, err := pullRunner(ctx, dir)
+	for i := 0; i < pullRaceRetries && err != nil && strings.Contains(out, multiBranchFFMsg); i++ {
+		select {
+		case <-ctx.Done():
+			return out, err
+		case <-time.After(pullRetryBackoff):
+		}
+		out, err = pullRunner(ctx, dir)
+	}
+	return out, err
+}
+
 // GitClone clones a repo into the given directory (full clone, no shallow).
 func GitClone(ctx context.Context, url, dir string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "clone", url, dir)
@@ -332,7 +370,7 @@ func executePull(ctx context.Context, task Task) Result {
 		return r
 	}
 
-	pullOut, err := GitPull(ctx, task.LocalDir)
+	pullOut, err := pullWithRaceRetry(ctx, task.LocalDir)
 	r.Output = pullOut
 	if err != nil {
 		r.Status, r.Summary = classifyPullError(pullOut, err)
